@@ -1,0 +1,26 @@
+[package]
+name = "solana-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Dependency-free Solana JSON-RPC client, base58 codec, and SPL Token/Token-2022 mint parsing for ZeroClaw WIT tool plugins. Deliberately not solana-sdk/solana-client, which do not build cleanly for wasm32-wasip2."
+publish = false
+
+[dependencies]
+serde_json = "1"
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+waki = { version = "0.5.1", features = ["json"] }
+
+[features]
+test-support = []
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1
+
+# Standalone crate: built for wasm32-wasip2 as a dependency of a plugin, not
+# part of any host workspace.
+[workspace]
