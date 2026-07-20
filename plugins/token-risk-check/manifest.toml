@@ -1,0 +1,13 @@
+name = "token-risk-check"
+version = "0.1.0"
+description = "Rug/custody risk assessment for a Solana SPL Token or Token-2022 mint: authorities, dangerous extensions, holder concentration. Read-only (T0)."
+author = "tuffagent"
+wasm_path = "token_risk_check.wasm"
+capabilities = ["tool"]
+# config_read: rpc_url, amber_threshold, red_threshold, check_liquidity,
+# ollama_enabled, ollama_endpoint, ollama_model — all optional, safe defaults
+# (see README for the full table).
+# http_client: outbound calls to the configured Solana RPC, the Jupiter
+# token-list endpoint, and (only if ollama_enabled) a local/configured
+# Ollama server.
+permissions = ["config_read", "http_client"]
