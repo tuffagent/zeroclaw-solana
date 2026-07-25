@@ -99,9 +99,16 @@ jobs:
         working-directory: zeroclaw-solana/plugins/token-risk-check
         run: |
           curl -fsSL https://ollama.com/install.sh | sh
+          # The installer starts a systemd service and prints "API is now
+          # available" before it's reliably reachable (observed flaky:
+          # passed on one run, lost the race on the next) - wait for real.
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:11434/api/tags >/dev/null 2>&1 && break
+            echo "waiting for ollama server to come up... ($i/30)"
+            sleep 2
+          done
+          curl -sf http://localhost:11434/api/tags >/dev/null 2>&1 || { echo "ollama server never became reachable"; journalctl -u ollama --no-pager | tail -50; exit 1; }
           ollama pull qwen2.5:0.5b
-          nohup ollama serve > /tmp/ollama.log 2>&1 &
-          sleep 5
           echo "## Task B — Ollama standalone loopback" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           curl -s http://localhost:11434/api/generate -d '{"model":"qwen2.5:0.5b","prompt":"say hello in five words","stream":false}' | tee -a "$GITHUB_STEP_SUMMARY"
