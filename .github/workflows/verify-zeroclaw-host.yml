@@ -47,7 +47,10 @@ jobs:
           echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
 
       - name: Install spl-token CLI
-        run: cargo install spl-token-cli --locked
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+          cargo install spl-token-cli --locked
 
       - name: "Task A — install plugin, confirm registration"
         working-directory: zeroclaw-solana/plugins/token-risk-check
