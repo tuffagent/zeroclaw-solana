@@ -10,4 +10,15 @@ plugins for Zeroclaw" bounty:
   ZeroClaw WIT tool plugin built on `solana-core`: assesses rug/custody risk
   for a Solana mint. Track D submission. Custody tier **T0 (Read)**.
 
-See each crate's own README for details.
+See [`plugins/token-risk-check/demo-transcripts.md`](./plugins/token-risk-check/demo-transcripts.md)
+for real mainnet/devnet runs and
+[`plugins/token-risk-check/prompt-injection-test.md`](./plugins/token-risk-check/prompt-injection-test.md)
+for the mandatory safety test.
+
+## Building
+
+```bash
+rustup target add wasm32-wasip2
+cd crates/solana-core && cargo test --lib && cargo build --target wasm32-wasip2 --release
+cd ../../plugins/token-risk-check && cargo test --lib && cargo build --target wasm32-wasip2 --release
+```
