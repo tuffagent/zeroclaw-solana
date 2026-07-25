@@ -10,9 +10,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use zeroclaw_api::tool::Tool;
-use zeroclaw_plugins::PluginPermission;
 use zeroclaw_plugins::component::PluginLimits;
+use zeroclaw_plugins::instance::PluginInstanceScope;
 use zeroclaw_plugins::wasm_tool::WasmTool;
+use zeroclaw_plugins::{PluginCapability, PluginManifest};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
@@ -40,9 +41,20 @@ async fn main() -> anyhow::Result<()> {
     let wasm_path = PathBuf::from(std::env::var("TRC_WASM_PATH").unwrap_or_else(|_| {
         "target/wasm32-wasip2/release/token_risk_check.wasm".to_string()
     }));
+    let manifest_path = std::env::var("TRC_MANIFEST_PATH").unwrap_or_else(|_| "manifest.toml".to_string());
 
-    // Matches manifest.toml's declared permissions exactly.
-    let permissions = vec![PluginPermission::ConfigRead, PluginPermission::HttpClient];
+    // Load the real manifest.toml exactly as the host does (registry.rs
+    // load_manifest: toml::from_str::<PluginManifest>), instead of hand-
+    // rolling permissions/name/description, so a manifest drift shows up here.
+    let manifest_toml = std::fs::read_to_string(&manifest_path)?;
+    let manifest: PluginManifest = toml::from_str(&manifest_toml)?;
+
+    let scope = PluginInstanceScope::from_manifest(
+        &manifest,
+        PluginCapability::Tool,
+        "token-risk-check",
+        manifest.permissions.clone(),
+    )?;
 
     // Production defaults from PluginLimitsConfig (zeroclaw-config schema.rs).
     let limits = PluginLimits {
@@ -52,14 +64,7 @@ async fn main() -> anyhow::Result<()> {
         max_instances: 64,
     };
 
-    let tool = WasmTool::from_wasm(
-        wasm_path,
-        permissions,
-        "token-risk-check".to_string(),
-        "Rug/custody risk assessment for a Solana SPL Token or Token-2022 mint".to_string(),
-        config,
-        limits,
-    );
+    let tool = WasmTool::from_wasm(wasm_path, scope, config, limits)?;
 
     // from_wasm probes the component's real tool export for its name and
     // description, so this confirms registration succeeded (not a
