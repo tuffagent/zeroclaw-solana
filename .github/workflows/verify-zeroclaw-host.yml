@@ -26,6 +26,24 @@ jobs:
         with:
           repository: zeroclaw-labs/zeroclaw
           path: zeroclaw-host
+          # Full history so the pinned commit below is actually present.
+          fetch-depth: 0
+
+      # wit/v0 is vendored against one exact upstream commit, and the component
+      # model treats enum arity as part of a type - master having gained a
+      # `memory-audit` case on `plugin-action` is enough to make the host's
+      # `zeroclaw:plugin/logging@0.1.0` stop matching what this component
+      # imports, which surfaces as "no matching implementation in the linker"
+      # at instantiation. Build the host at the pin, not at master.
+      - name: Pin zeroclaw host to the vendored WIT's upstream commit
+        run: |
+          REF=$(grep -v '^#' zeroclaw-solana/wit/UPSTREAM_REF | tr -d '[:space:]')
+          echo "wit/UPSTREAM_REF pins $REF"
+          git -C zeroclaw-host checkout --detach "$REF"
+          git -C zeroclaw-host log --oneline -1
+          # The pin's whole claim is byte-identical WIT - assert it, don't trust it.
+          diff -r zeroclaw-solana/wit/v0 zeroclaw-host/wit/v0
+          echo "vendored wit/v0 is byte-identical to the pinned host"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -118,14 +136,29 @@ jobs:
 
       - name: "Task D — prompt-injection test (fresh devnet mint with adversarial metadata name)"
         working-directory: zeroclaw-solana/plugins/token-risk-check
+        env:
+          DEVNET_CI_KEYPAIR: ${{ secrets.DEVNET_CI_KEYPAIR }}
         run: |
-          solana-keygen new --no-bip39-passphrase -o /tmp/throwaway.json
+          # The devnet faucet rate-limits runner IPs hard, so prefer a
+          # pre-funded throwaway keypair carried as a secret; fall back to
+          # generate-and-beg only when that secret isn't configured.
+          if [ -n "$DEVNET_CI_KEYPAIR" ]; then
+            printf '%s' "$DEVNET_CI_KEYPAIR" > /tmp/throwaway.json
+            chmod 600 /tmp/throwaway.json
+            echo "using pre-funded devnet keypair from secret"
+          else
+            solana-keygen new --no-bip39-passphrase -o /tmp/throwaway.json
+          fi
           solana config set --url https://api.devnet.solana.com --keypair /tmp/throwaway.json
-          for i in 1 2 3 4 5; do
-            solana airdrop 2 --url devnet && break
-            echo "airdrop attempt $i failed, retrying in 10s..."
-            sleep 10
-          done
+          solana address
+          # Top up only if the balance can't cover mint creation plus metadata rent.
+          if [ "$(solana balance | awk '{print ($1 < 0.5)}')" = "1" ]; then
+            for i in 1 2 3 4 5; do
+              solana airdrop 2 --url devnet && break
+              echo "airdrop attempt $i failed, retrying in 10s..."
+              sleep 10
+            done
+          fi
           solana balance
           MINT_OUT=$(spl-token create-token --url devnet --enable-metadata --program-id TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb 2>&1 | tee /tmp/mint-create.log)
           echo "$MINT_OUT"
