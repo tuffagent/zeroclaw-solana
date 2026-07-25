@@ -114,6 +114,8 @@ jobs:
 
       - name: "Task B — Ollama loopback-reachability spike"
         working-directory: zeroclaw-solana/plugins/token-risk-check
+        env:
+          MAINNET_RPC: https://mainnet.helius-rpc.com/?api-key=${{ secrets.HELIUS_API_KEY }}
         run: |
           curl -fsSL https://ollama.com/install.sh | sh
           # The installer starts a systemd service and prints "API is now
@@ -130,23 +132,56 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           curl -s http://localhost:11434/api/generate -d '{"model":"qwen2.5:0.5b","prompt":"say hello in five words","stream":false}' | tee -a "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "## Task B — through-host plugin call (mainnet USDC, ollama_enabled=true)" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Task B — through-host plugin call (mainnet PYUSD, Token-2022, ollama_enabled=true)" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          TRC_OLLAMA_ENABLED=true tools/live-verify/target/release/live-verify EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v | tee -a "$GITHUB_STEP_SUMMARY"
+          TRC_OLLAMA_ENABLED=true TRC_RPC_URL="$MAINNET_RPC" tools/live-verify/target/release/live-verify 2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo | tee -a "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      # USDC has roughly ten million holders, so `getTokenLargestAccounts`
+      # is refused for it by every provider on scale grounds alone - Helius
+      # answers "Too many accounts requested (10000000 pubkeys)". That makes
+      # it the honest live proof of the degraded path: a real mint, a real
+      # refusal, and a verdict that still has to come back amber rather than
+      # green off a partial reading.
+      - name: "Task B2 — degraded holder scan against a real mega-token (mainnet USDC)"
+        working-directory: zeroclaw-solana/plugins/token-risk-check
+        env:
+          MAINNET_RPC: https://mainnet.helius-rpc.com/?api-key=${{ secrets.HELIUS_API_KEY }}
+        run: |
+          echo "## Task B2 — mainnet USDC, holder scan refused on scale" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          TRC_RPC_URL="$MAINNET_RPC" tools/live-verify/target/release/live-verify EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v | tee /tmp/usdc.json | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          # Assert the contract rather than eyeballing it. The tool result
+          # carries the risk report as an escaped JSON string, so parse it
+          # properly instead of grepping through the escaping.
+          python3 - <<'PY'
+          import json
+          result = json.load(open("/tmp/usdc.json"))
+          assert result["success"], f"call failed: {result['error']}"
+          report = json.loads(result["output"])
+          assert report["factors"]["concentration"] is None, "expected a null concentration"
+          assert any("holder concentration unavailable" in w for w in report["warnings"]), \
+              f"expected a warning naming the cause, got {report['warnings']}"
+          assert report["verdict"] != "green", "a partial reading must never come back green"
+          print(f"degraded path holds: verdict={report['verdict']}, warnings={report['warnings']}")
+          PY
 
       - name: "Task C — real-network verification (devnet permanent_delegate mint)"
         working-directory: zeroclaw-solana/plugins/token-risk-check
+        env:
+          DEVNET_RPC: https://devnet.helius-rpc.com/?api-key=${{ secrets.HELIUS_API_KEY }}
         run: |
           echo "## Task C — devnet permanent_delegate mint (FEBXiyu9QuByQGiMNzbkd3dkfX8pJfbYA3g1SPEYvjz2)" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          TRC_RPC_URL=https://api.devnet.solana.com tools/live-verify/target/release/live-verify FEBXiyu9QuByQGiMNzbkd3dkfX8pJfbYA3g1SPEYvjz2 | tee -a "$GITHUB_STEP_SUMMARY"
+          TRC_RPC_URL="$DEVNET_RPC" tools/live-verify/target/release/live-verify FEBXiyu9QuByQGiMNzbkd3dkfX8pJfbYA3g1SPEYvjz2 | tee -a "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: "Task D — prompt-injection test (fresh devnet mint with adversarial metadata name)"
         working-directory: zeroclaw-solana/plugins/token-risk-check
         env:
           DEVNET_CI_KEYPAIR: ${{ secrets.DEVNET_CI_KEYPAIR }}
+          DEVNET_RPC: https://devnet.helius-rpc.com/?api-key=${{ secrets.HELIUS_API_KEY }}
         run: |
           # The devnet faucet rate-limits runner IPs hard, so prefer a
           # pre-funded throwaway keypair carried as a secret; fall back to
@@ -182,7 +217,7 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "## Task D — plugin output against adversarial mint" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          TRC_RPC_URL=https://api.devnet.solana.com tools/live-verify/target/release/live-verify "$MINT_ADDR" | tee -a "$GITHUB_STEP_SUMMARY"
+          TRC_RPC_URL="$DEVNET_RPC" tools/live-verify/target/release/live-verify "$MINT_ADDR" | tee -a "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload logs as artefact
