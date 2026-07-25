@@ -21,25 +21,34 @@ jobs:
         with:
           path: zeroclaw-solana
 
-      - name: Checkout zeroclaw host
+      # wit/v0 is vendored against one exact upstream commit, and the component
+      # model folds enum arity into type identity - one extra case on
+      # `plugin-action` upstream is enough to make the host's
+      # `zeroclaw:plugin/logging@0.1.0` stop matching what this component
+      # imports, which surfaces as "no matching implementation in the linker"
+      # at instantiation. So the host has to be built at the pin, and the pin
+      # has to be read before the checkout that consumes it.
+      - name: Read the WIT pin
+        id: pin
+        run: |
+          REF=$(grep -v '^#' zeroclaw-solana/wit/UPSTREAM_REF | tr -d '[:space:]')
+          echo "wit/UPSTREAM_REF pins $REF"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      # Handing the SHA to the action, rather than fetching branches and
+      # detaching afterwards, is what actually materialises that commit's
+      # tree - a bare `fetch +refs/heads/*` only carries objects reachable
+      # from a branch head, and detaching onto anything else dies with
+      # "unable to read tree".
+      - name: Checkout zeroclaw host at the pin
         uses: actions/checkout@v4
         with:
           repository: zeroclaw-labs/zeroclaw
           path: zeroclaw-host
-          # Full history so the pinned commit below is actually present.
-          fetch-depth: 0
+          ref: ${{ steps.pin.outputs.ref }}
 
-      # wit/v0 is vendored against one exact upstream commit, and the component
-      # model treats enum arity as part of a type - master having gained a
-      # `memory-audit` case on `plugin-action` is enough to make the host's
-      # `zeroclaw:plugin/logging@0.1.0` stop matching what this component
-      # imports, which surfaces as "no matching implementation in the linker"
-      # at instantiation. Build the host at the pin, not at master.
-      - name: Pin zeroclaw host to the vendored WIT's upstream commit
+      - name: Assert the vendored WIT still matches the host
         run: |
-          REF=$(grep -v '^#' zeroclaw-solana/wit/UPSTREAM_REF | tr -d '[:space:]')
-          echo "wit/UPSTREAM_REF pins $REF"
-          git -C zeroclaw-host checkout --detach "$REF"
           git -C zeroclaw-host log --oneline -1
           # The pin's whole claim is byte-identical WIT - assert it, don't trust it.
           diff -r zeroclaw-solana/wit/v0 zeroclaw-host/wit/v0

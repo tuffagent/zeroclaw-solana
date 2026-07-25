@@ -1,3 +1,6 @@
-# Full zeroclaw-labs/zeroclaw commit with byte-identical wit/v0.
-# Advance this pin and wit/v0 together in one reviewed change.
-e112ce6b5ccdac9e1cb166bab217e730dd7e24c2
+# Full zeroclaw-labs/zeroclaw commit whose wit/v0 this directory mirrors,
+# byte for byte. The component model folds enum arity into type identity, so
+# a single extra case upstream is enough to stop the host satisfying this
+# component's imports - advance this pin and wit/v0 together, in one
+# reviewed change, and never one without the other.
+4ae0d75016cb5afc3ad416c5e19769ab9f3e2b0a
