@@ -42,11 +42,19 @@ pub struct ConcentrationInput {
 /// Combine authority, extension, and concentration signals into a single
 /// 0-100 score and a verdict band. `amber_threshold`/`red_threshold` are
 /// operator-configurable (see `token-risk-check`'s config, Task 8).
+///
+/// `concentration` is optional because `getTokenLargestAccounts` is an
+/// expensive scan that public RPC endpoints throttle outright, so a caller
+/// can genuinely reach this point having measured the authorities and the
+/// extensions but not the holders. Passing `None` invents no probability
+/// for the missing signal - the score stays an honest reading of what was
+/// actually measured - and instead carries the uncertainty in the verdict,
+/// which can then never come back green.
 pub fn score(
     mint_authority_present: bool,
     freeze_authority_present: bool,
     extensions: &MintExtensions,
-    concentration: &ConcentrationInput,
+    concentration: Option<&ConcentrationInput>,
     amber_threshold: f64,
     red_threshold: f64,
 ) -> (f64, Verdict) {
@@ -75,18 +83,26 @@ pub fn score(
     if extensions.confidential_transfer {
         probabilities.push(0.05);
     }
-    probabilities.push(concentration_probability(concentration));
+    if let Some(c) = concentration {
+        probabilities.push(concentration_probability(c));
+    }
 
     let hazard: f64 = probabilities.iter().map(|p| -(1.0 - p).ln()).sum();
     let value = 100.0 * (1.0 - (-hazard).exp());
 
-    let verdict = if value >= red_threshold {
+    let mut verdict = if value >= red_threshold {
         Verdict::Red
     } else if value >= amber_threshold {
         Verdict::Amber
     } else {
         Verdict::Green
     };
+    // An unmeasured signal is not an absent one. Green is this tool's only
+    // affirmative claim, so it is the one verdict a partial reading may not
+    // make; amber sends it to a human, which is where an unknown belongs.
+    if concentration.is_none() && verdict == Verdict::Green {
+        verdict = Verdict::Amber;
+    }
     (value, verdict)
 }
 
@@ -132,7 +148,7 @@ mod tests {
             top10_pct: 12.0,
             top20_pct: 18.0,
         };
-        let (s, verdict) = score(false, false, &no_extensions(), &concentration, 25.0, 60.0);
+        let (s, verdict) = score(false, false, &no_extensions(), Some(&concentration), 25.0, 60.0);
         assert!((s - 8.0).abs() < 0.2, "expected ~8.0, got {s}");
         assert_eq!(verdict, Verdict::Green);
     }
@@ -145,7 +161,7 @@ mod tests {
             top10_pct: 48.0,
             top20_pct: 55.0,
         };
-        let (s, verdict) = score(false, false, &no_extensions(), &concentration, 25.0, 60.0);
+        let (s, verdict) = score(false, false, &no_extensions(), Some(&concentration), 25.0, 60.0);
         assert!((s - 58.7).abs() < 0.2, "expected ~58.7, got {s}");
         assert_eq!(verdict, Verdict::Amber);
     }
@@ -162,7 +178,7 @@ mod tests {
             permanent_delegate: true,
             ..MintExtensions::default()
         };
-        let (s, verdict) = score(false, false, &extensions, &concentration, 25.0, 60.0);
+        let (s, verdict) = score(false, false, &extensions, Some(&concentration), 25.0, 60.0);
         assert!((s - 90.8).abs() < 0.2, "expected ~90.8, got {s}");
         assert_eq!(verdict, Verdict::Red);
     }
@@ -179,15 +195,15 @@ mod tests {
             transfer_fee_config: true,
             ..MintExtensions::default()
         };
-        let (s, verdict) = score(true, false, &extensions, &concentration, 25.0, 60.0);
+        let (s, verdict) = score(true, false, &extensions, Some(&concentration), 25.0, 60.0);
         assert!((s - 48.8).abs() < 0.2, "expected ~48.8, got {s}");
         assert_eq!(verdict, Verdict::Amber);
 
         // Each factor alone would be green — this is the case that justifies
         // noisy-OR over a plain max() across factors.
-        let (mint_only, v1) = score(true, false, &no_extensions(), &ConcentrationInput {
+        let (mint_only, v1) = score(true, false, &no_extensions(), Some(&ConcentrationInput {
             top1_pct: 0.0, top5_pct: 0.0, top10_pct: 0.0, top20_pct: 0.0,
-        }, 25.0, 60.0);
+        }), 25.0, 60.0);
         assert!(mint_only < 25.0);
         assert_eq!(v1, Verdict::Green);
     }
@@ -199,7 +215,36 @@ mod tests {
         };
         // Same ~8.0 score as the clean-mint test, but a tighter amber
         // threshold now classifies it amber instead of green.
-        let (_, verdict) = score(false, false, &no_extensions(), &concentration, 5.0, 60.0);
+        let (_, verdict) = score(false, false, &no_extensions(), Some(&concentration), 5.0, 60.0);
         assert_eq!(verdict, Verdict::Amber);
+    }
+
+    #[test]
+    fn unmeasured_concentration_can_never_score_green() {
+        // The same mint that scores a clean green with holder data must not
+        // keep that green once the holder reading is missing.
+        let clean = ConcentrationInput {
+            top1_pct: 3.0, top5_pct: 8.0, top10_pct: 12.0, top20_pct: 18.0,
+        };
+        let (measured_score, measured) = score(false, false, &no_extensions(), Some(&clean), 25.0, 60.0);
+        assert_eq!(measured, Verdict::Green);
+
+        let (unknown_score, unknown) = score(false, false, &no_extensions(), None, 25.0, 60.0);
+        assert_eq!(unknown, Verdict::Amber);
+        // No probability was invented for the missing signal, so the score
+        // drops to what was actually measured even as the verdict hardens.
+        assert!(unknown_score < measured_score);
+        assert!(unknown_score.abs() < f64::EPSILON, "expected 0.0, got {unknown_score}");
+    }
+
+    #[test]
+    fn unmeasured_concentration_never_softens_a_bad_verdict() {
+        let extensions = MintExtensions {
+            permanent_delegate: true,
+            ..MintExtensions::default()
+        };
+        let (s, verdict) = score(false, false, &extensions, None, 25.0, 60.0);
+        assert!((s - 90.0).abs() < 0.2, "expected ~90.0, got {s}");
+        assert_eq!(verdict, Verdict::Red);
     }
 }

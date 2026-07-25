@@ -171,12 +171,15 @@ mod component {
                     "non_transferable": result.extensions.non_transferable,
                     "confidential_transfer": result.extensions.confidential_transfer,
                 },
-                "concentration": {
-                    "top1_pct": result.concentration.top1_pct,
-                    "top5_pct": result.concentration.top5_pct,
-                    "top10_pct": result.concentration.top10_pct,
-                    "top20_pct": result.concentration.top20_pct,
-                }
+                // Null, never zeroes: a missing holder reading and a mint
+                // whose top holders genuinely hold nothing must not arrive
+                // at a caller looking identical.
+                "concentration": result.concentration.map(|c| serde_json::json!({
+                    "top1_pct": c.top1_pct,
+                    "top5_pct": c.top5_pct,
+                    "top10_pct": c.top10_pct,
+                    "top20_pct": c.top20_pct,
+                })),
             });
             let factors_json = factors_value.to_string();
 
@@ -193,6 +196,7 @@ mod component {
                     "decimals": result.decimals,
                     "total_supply": result.supply.to_string(),
                 },
+                "warnings": result.warnings,
                 "summary": summary,
             })
             .to_string();

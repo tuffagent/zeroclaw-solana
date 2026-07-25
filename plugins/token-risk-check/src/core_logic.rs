@@ -18,9 +18,13 @@ pub struct RiskCheckOutput {
     pub mint_authority_present: bool,
     pub freeze_authority_present: bool,
     pub extensions: MintExtensions,
-    pub concentration: ConcentrationInput,
+    /// `None` when the holder scan could not be read at all - see `warnings`
+    /// for why, and `risk::score` for what an unknown does to the verdict.
+    pub concentration: Option<ConcentrationInput>,
     pub decimals: u8,
     pub supply: u64,
+    /// Signals that were asked for and did not arrive. Empty on a full read.
+    pub warnings: Vec<String>,
 }
 
 pub fn run(
@@ -42,14 +46,26 @@ pub fn run(
 
     let parsed = mint::parse_mint(&account.data, &account.owner)?;
 
-    let largest = rpc::get_token_largest_accounts(transport, &config.rpc_url, mint_pubkey)?;
-    let concentration = concentration_from_largest(&largest, parsed.supply);
+    // `getTokenLargestAccounts` is an expensive scan, and every public RPC
+    // endpoint throttles it outright - the Solana Labs ones answer a bare
+    // 429 on every attempt, mainnet and devnet alike. Losing the holder
+    // signal must not lose the authority and extension findings with it,
+    // which are the two that came from an ordinary `getAccountInfo` and are
+    // sitting right here already parsed.
+    let mut warnings: Vec<String> = Vec::new();
+    let concentration = match rpc::get_token_largest_accounts(transport, &config.rpc_url, mint_pubkey) {
+        Ok(largest) => Some(concentration_from_largest(&largest, parsed.supply)),
+        Err(e) => {
+            warnings.push(format!("holder concentration unavailable: {e}"));
+            None
+        }
+    };
 
     let (score, verdict) = risk::score(
         parsed.authorities.mint_authority_present,
         parsed.authorities.freeze_authority_present,
         &parsed.extensions,
-        &concentration,
+        concentration.as_ref(),
         config.amber_threshold,
         config.red_threshold,
     );
@@ -63,6 +79,7 @@ pub fn run(
         concentration,
         decimals: parsed.decimals,
         supply: parsed.supply,
+        warnings,
     })
 }
 
@@ -138,6 +155,37 @@ mod tests {
         assert_eq!(result.decimals, 6);
         assert_eq!(result.supply, 1_000_000);
         assert_eq!(result.verdict, solana_core::risk::Verdict::Green);
+    }
+
+    // The exact shape a throttled public endpoint returns for the holder
+    // scan while still answering `getAccountInfo` perfectly well.
+    struct ThrottledHolderScan;
+    impl solana_core::transport::RpcTransport for ThrottledHolderScan {
+        fn post(&self, _url: &str, body: &str) -> Result<String, String> {
+            if body.contains("getAccountInfo") {
+                Ok(clean_mint_account_info())
+            } else {
+                Ok(r#"{"jsonrpc":"2.0","error":{"code":429,"message":"Too many requests for a specific RPC call"},"id":1}"#.to_string())
+            }
+        }
+    }
+
+    #[test]
+    fn a_throttled_holder_scan_keeps_the_findings_it_did_get() {
+        let config = RiskCheckConfig::from_section(&HashMap::new());
+        let result = run(&ThrottledHolderScan, &config, "11111111111111111111111111111111").unwrap();
+
+        // The authorities and extensions came from getAccountInfo and survive.
+        assert!(!result.mint_authority_present);
+        assert!(!result.freeze_authority_present);
+        assert_eq!(result.supply, 1_000_000);
+        // The holder signal is absent rather than zeroed, said so out loud...
+        assert!(result.concentration.is_none());
+        assert_eq!(result.warnings.len(), 1);
+        assert!(result.warnings[0].contains("holder concentration unavailable"), "unexpected warning: {}", result.warnings[0]);
+        assert!(result.warnings[0].contains("429"), "the warning should carry the cause: {}", result.warnings[0]);
+        // ...and the same mint that scores green on a full read cannot here.
+        assert_eq!(result.verdict, solana_core::risk::Verdict::Amber);
     }
 
     #[test]
