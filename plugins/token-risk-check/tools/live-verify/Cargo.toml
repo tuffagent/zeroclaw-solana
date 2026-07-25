@@ -1,0 +1,22 @@
+# Standalone workspace (mirrors the sibling crates' convention): this tool
+# is never built as part of a wider `cargo build`, only invoked directly.
+[workspace]
+
+[package]
+name = "live-verify"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Drives the compiled token-risk-check .wasm through the real host execution path (WasmTool::execute), for live mainnet/devnet verification without a full agent+LLM loop."
+
+# Path deps reach into a sibling checkout of zeroclaw-labs/zeroclaw at
+# ../../../../../zeroclaw-host (five levels up from here, then across) -
+# this tool only builds where that sibling clone exists, e.g. the
+# verify-zeroclaw-host.yml CI workflow, which checks out both repos side
+# by side under the same job workspace.
+[dependencies]
+zeroclaw-plugins = { path = "../../../../../zeroclaw-host/crates/zeroclaw-plugins", features = ["plugins-wasm-cranelift"] }
+zeroclaw-api = { path = "../../../../../zeroclaw-host/crates/zeroclaw-api" }
+tokio = { version = "1", features = ["rt", "macros"] }
+serde_json = "1"
+anyhow = "1"

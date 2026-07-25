@@ -3,6 +3,14 @@ name: Verify zeroclaw host (Tasks 12/13/15)
 on:
   workflow_dispatch: {}
 
+# A `cmd | tee file` step exits with tee's status, not cmd's, under the
+# default `bash -e` shell - that let a broken "zeroclaw plugin exec"
+# invocation report success while doing nothing (caught the hard way in
+# an earlier run). pipefail makes the whole pipeline fail on any member.
+defaults:
+  run:
+    shell: bash --noprofile --norc -eo pipefail {0}
+
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -30,6 +38,7 @@ jobs:
           workspaces: |
             zeroclaw-host
             zeroclaw-solana/plugins/token-risk-check
+            zeroclaw-solana/plugins/token-risk-check/tools/live-verify
 
       - name: Build zeroclaw host (release, plugins-wasm + cranelift)
         working-directory: zeroclaw-host
@@ -40,6 +49,18 @@ jobs:
       - name: Build token-risk-check plugin (wasm32-wasip2)
         working-directory: zeroclaw-solana/plugins/token-risk-check
         run: cargo build --target wasm32-wasip2 --release
+
+      # Loads the compiled .wasm through WasmTool::execute, the same
+      # host-side path zeroclaw itself uses - zeroclaw has no CLI
+      # subcommand for invoking a tool directly (confirmed against
+      # source: `plugin` only has list/search/install/remove/info/
+      # migrate); the only sanctioned path is a full agent+LLM
+      # conversation loop deciding to call the tool, which isn't
+      # suited to deterministic CI verification. See
+      # plugins/token-risk-check/tools/live-verify/src/main.rs.
+      - name: Build live-verify harness
+        working-directory: zeroclaw-solana/plugins/token-risk-check/tools/live-verify
+        run: cargo build --release
 
       - name: Install Solana CLI
         run: |
@@ -64,37 +85,6 @@ jobs:
           ../../../zeroclaw-host/target/release/zeroclaw plugin list | tee -a "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Install tomlkit for hand-editing plugin config
-        run: pip install --quiet tomlkit
-
-      # `zeroclaw config set token-risk-check.*` cannot be used here: a
-      # freshly-installed plugin has no `plugins.entries` row yet, and
-      # `config set` cannot materialize a missing natural-key entry
-      # (upstream issue #8636, confirmed in docs/book/src/developing/
-      # plugin-protocol.md). The first entry has to be hand-written.
-      - name: "Set token-risk-check plugin config (ollama_enabled=true)"
-        run: |
-          python3 - <<'PYEOF'
-          import tomlkit, pathlib
-          p = pathlib.Path.home() / ".zeroclaw" / "config.toml"
-          doc = tomlkit.parse(p.read_text()) if p.exists() else tomlkit.document()
-          plugins = doc.setdefault("plugins", tomlkit.table())
-          entries = plugins.get("entries")
-          if entries is None:
-              entries = tomlkit.aot()
-              plugins["entries"] = entries
-          entry = next((e for e in entries if e.get("name") == "token-risk-check"), None)
-          if entry is None:
-              entry = tomlkit.table()
-              entry["name"] = "token-risk-check"
-              entry["config"] = tomlkit.table()
-              entries.append(entry)
-          entry["config"]["ollama_enabled"] = "true"
-          p.parent.mkdir(parents=True, exist_ok=True)
-          p.write_text(tomlkit.dumps(doc))
-          print(tomlkit.dumps(doc))
-          PYEOF
-
       - name: "Task B — Ollama loopback-reachability spike"
         working-directory: zeroclaw-solana/plugins/token-risk-check
         run: |
@@ -115,27 +105,15 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "## Task B — through-host plugin call (mainnet USDC, ollama_enabled=true)" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          ../../../zeroclaw-host/target/release/zeroclaw plugin exec token-risk-check token_risk_check '{"mint":"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"}' | tee -a "$GITHUB_STEP_SUMMARY"
+          TRC_OLLAMA_ENABLED=true tools/live-verify/target/release/live-verify EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v | tee -a "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-
-      - name: "Set token-risk-check plugin config (rpc_url=devnet)"
-        run: |
-          python3 - <<'PYEOF'
-          import tomlkit, pathlib
-          p = pathlib.Path.home() / ".zeroclaw" / "config.toml"
-          doc = tomlkit.parse(p.read_text())
-          entry = next(e for e in doc["plugins"]["entries"] if e.get("name") == "token-risk-check")
-          entry["config"]["rpc_url"] = "https://api.devnet.solana.com"
-          p.write_text(tomlkit.dumps(doc))
-          print(tomlkit.dumps(doc))
-          PYEOF
 
       - name: "Task C — real-network verification (devnet permanent_delegate mint)"
         working-directory: zeroclaw-solana/plugins/token-risk-check
         run: |
           echo "## Task C — devnet permanent_delegate mint (FEBXiyu9QuByQGiMNzbkd3dkfX8pJfbYA3g1SPEYvjz2)" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          ../../../zeroclaw-host/target/release/zeroclaw plugin exec token-risk-check token_risk_check '{"mint":"FEBXiyu9QuByQGiMNzbkd3dkfX8pJfbYA3g1SPEYvjz2"}' | tee -a "$GITHUB_STEP_SUMMARY"
+          TRC_RPC_URL=https://api.devnet.solana.com tools/live-verify/target/release/live-verify FEBXiyu9QuByQGiMNzbkd3dkfX8pJfbYA3g1SPEYvjz2 | tee -a "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: "Task D — prompt-injection test (fresh devnet mint with adversarial metadata name)"
@@ -162,7 +140,7 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "## Task D — plugin output against adversarial mint" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          ../../../zeroclaw-host/target/release/zeroclaw plugin exec token-risk-check token_risk_check "{\"mint\":\"$MINT_ADDR\"}" | tee -a "$GITHUB_STEP_SUMMARY"
+          TRC_RPC_URL=https://api.devnet.solana.com tools/live-verify/target/release/live-verify "$MINT_ADDR" | tee -a "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload logs as artefact
@@ -172,7 +150,6 @@ jobs:
           name: zeroclaw-verification-logs
           path: |
             zeroclaw-host/build.log
-            /tmp/ollama.log
             /tmp/mint-create.log
             /tmp/mint-metadata.log
           if-no-files-found: ignore
