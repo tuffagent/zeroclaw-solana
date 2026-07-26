@@ -26,9 +26,13 @@ concrete thing this crate is trying to hand the next plugin author.
   base64 decoder.
 - `mint` — SPL Token / Token-2022 mint account parsing: authorities and the
   six Token-2022 extensions the risk model cares about.
-- `risk` — the noisy-OR scoring model. See
-  `docs/superpowers/specs/2026-07-20-zeroclaw-solana-plugin-design.md` in
-  the parent workspace for the full derivation.
+- `risk` — the noisy-OR scoring model. `score` takes its concentration
+  argument as an `Option`, because `getTokenLargestAccounts` is an
+  expensive scan that public endpoints refuse outright: passing `None`
+  omits that factor rather than substituting an invented probability, and
+  floors the verdict at amber so a partial reading can never return green.
+  See `docs/superpowers/specs/2026-07-20-zeroclaw-solana-plugin-design.md`
+  in the parent workspace for the full derivation.
 
 ## Using it from another plugin
 

@@ -15,6 +15,8 @@ here is a misleading verdict, never fund loss.
   percentage of total supply). This RPC method returns at most the top 20
   holders, so a **low** reading means little (holders 21+ are invisible to
   this tool); a **high** reading is a hard floor on true concentration.
+  It also **needs an authenticated RPC** — see the note below, since the
+  default endpoint cannot serve it.
 - Optionally, whether the mint appears in Jupiter's public token list
   (informational only, never fed into the score).
 
@@ -56,13 +58,45 @@ funds.
 
 | Key | Default | Purpose |
 |---|---|---|
-| `rpc_url` | `https://api.mainnet-beta.solana.com` | Solana JSON-RPC endpoint — supply your own; the default has strict rate limits |
+| `rpc_url` | `https://api.mainnet-beta.solana.com` | Solana JSON-RPC endpoint — supply an authenticated one, the default cannot serve the holder scan at all (see below) |
 | `amber_threshold` | `25` | Score at/above which the verdict is amber |
 | `red_threshold` | `60` | Score at/above which the verdict is red |
 | `check_liquidity` | `true` | One extra call to Jupiter's token list |
 | `ollama_enabled` | `false` | Gate for local-LLM narration (see below) |
 | `ollama_endpoint` | `http://localhost:11434` | Local Ollama server |
 | `ollama_model` | `qwen2.5:0.5b` | Kept deliberately small — this is a one-paragraph summary, not a reasoning task |
+
+## Set `rpc_url`, or you get two signals out of three
+
+`getTokenLargestAccounts` is a scan across every token account for a mint,
+and public endpoints will not run it. Solana Labs' mainnet *and* devnet
+RPC answer a bare `429 Too many requests for a specific RPC call` on every
+attempt, from any IP, with no backoff that clears it; publicnode blocks
+the parameter; dRPC and BlockEden require a paid plan. The default
+`rpc_url` above is exactly that public mainnet endpoint, so **out of the
+box this plugin reads authorities and extensions but not holders.** Point
+it at an authenticated RPC to get the full three-signal reading.
+
+Some mints cannot be scanned at any price: USDC has roughly ten million
+holders, and providers refuse it on size alone.
+
+When the scan cannot be read, the check degrades rather than failing:
+
+- The authority and extension findings are kept — they come from an
+  ordinary `getAccountInfo`, which works fine everywhere.
+- `concentration` is reported as `null`, never as zeroes, so a caller can
+  tell an unmeasured signal from a mint whose top holders hold nothing.
+- `warnings` names the cause verbatim, including the RPC's own error.
+- The verdict is **floored at amber**. No probability is invented for the
+  missing signal, so the score stays an honest reading of what was
+  actually measured; the uncertainty is carried by the verdict instead.
+  Green is this tool's one affirmative claim, and a partial reading is not
+  entitled to make it. A verdict already amber or red is left alone — an
+  unknown never softens a bad finding.
+
+`demo-transcripts.md` has this happening live against USDC, where the
+measured score of 23.5 sat below the amber threshold of 25 and would
+otherwise have returned green.
 
 ## Worked example
 
